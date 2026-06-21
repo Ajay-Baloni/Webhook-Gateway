@@ -1,6 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { Pool, PoolClient } from 'pg';
-import { PG_POOL } from '../../database/database.module';
+import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
 
 export interface RecordAttemptInput {
   deliveryId: string;
@@ -13,38 +13,30 @@ export interface RecordAttemptInput {
 
 @Injectable()
 export class AttemptsService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /** Record a single HTTP attempt. Called by the queue worker. */
-  async record(input: RecordAttemptInput, client: Pool | PoolClient = this.pool) {
-    const { rows } = await client.query(
-      `INSERT INTO delivery_attempts
-         (delivery_id, attempt_number, response_code, response_body, error, latency_ms)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (delivery_id, attempt_number) DO NOTHING
-       RETURNING id`,
-      [
-        input.deliveryId,
-        input.attemptNumber,
-        input.responseCode ?? null,
-        input.responseBody ?? null,
-        input.error ?? null,
-        input.latencyMs ?? null,
+  record(input: RecordAttemptInput, tx: Prisma.TransactionClient = this.prisma) {
+    return tx.deliveryAttempt.createMany({
+      data: [
+        {
+          deliveryId: input.deliveryId,
+          attemptNumber: input.attemptNumber,
+          responseCode: input.responseCode ?? null,
+          responseBody: input.responseBody ?? null,
+          error: input.error ?? null,
+          latencyMs: input.latencyMs ?? null,
+        },
       ],
-    );
-    return rows[0];
+      skipDuplicates: true,
+    });
   }
 
   /** Timeline of attempts for a delivery (oldest first). */
-  async findByDelivery(deliveryId: string) {
-    const { rows } = await this.pool.query(
-      `SELECT id, delivery_id, attempt_number, response_code, response_body,
-              error, latency_ms, attempted_at
-       FROM delivery_attempts
-       WHERE delivery_id = $1
-       ORDER BY attempt_number ASC`,
-      [deliveryId],
-    );
-    return rows;
+  findByDelivery(deliveryId: string) {
+    return this.prisma.deliveryAttempt.findMany({
+      where: { deliveryId },
+      orderBy: { attemptNumber: 'asc' },
+    });
   }
 }

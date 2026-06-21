@@ -1,0 +1,118 @@
+// Webhook Gateway — Prisma schema (source of truth for the client).
+// The actual DDL (incl. partial indexes) lives in prisma/migrations and is
+// applied via `prisma migrate deploy`.
+
+generator client {
+  provider = "prisma-client-js"
+  // Runs on Debian (node:20) in the container and detects the right engine.
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DeliveryStatus {
+  pending
+  delivering
+  succeeded
+  failed
+  retrying
+  dead_lettered
+}
+
+model Source {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String
+  signingSecret String   @map("signing_secret")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  connections Connection[]
+  events      Event[]
+
+  @@map("sources")
+}
+
+model Destination {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  url       String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  connections Connection[]
+
+  @@map("destinations")
+}
+
+model Connection {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sourceId      String   @map("source_id") @db.Uuid
+  destinationId String   @map("destination_id") @db.Uuid
+  // { maxAttempts, baseMs, maxDelayMs, jitterMs }
+  retryPolicy   Json     @map("retry_policy")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  source      Source      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  destination Destination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+  deliveries  Delivery[]
+
+  @@unique([sourceId, destinationId])
+  @@index([sourceId])
+  @@map("connections")
+}
+
+model Event {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sourceId       String   @map("source_id") @db.Uuid
+  rawBody        String   @map("raw_body") // exact bytes received (HMAC fidelity)
+  headers        Json     @default("{}")
+  idempotencyKey String?  @map("idempotency_key")
+  receivedAt     DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  source     Source     @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  deliveries Delivery[]
+
+  // NULL idempotency keys are distinct in Postgres, so they never collide.
+  @@unique([sourceId, idempotencyKey])
+  @@index([sourceId])
+  @@index([receivedAt])
+  @@map("events")
+}
+
+model Delivery {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  eventId      String         @map("event_id") @db.Uuid
+  connectionId String         @map("connection_id") @db.Uuid
+  status       DeliveryStatus @default(pending)
+  nextRetryAt  DateTime       @default(now()) @map("next_retry_at") @db.Timestamptz(6)
+  attemptCount Int            @default(0) @map("attempt_count")
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  event      Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  connection Connection        @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  attempts   DeliveryAttempt[]
+
+  @@unique([eventId, connectionId])
+  @@index([status])
+  @@index([eventId])
+  @@map("deliveries")
+}
+
+model DeliveryAttempt {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deliveryId    String   @map("delivery_id") @db.Uuid
+  attemptNumber Int      @map("attempt_number")
+  responseCode  Int?     @map("response_code") // NULL when request never completed (e.g. ECONNREFUSED)
+  responseBody  String?  @map("response_body")
+  error         String? // transport-level error, if any
+  latencyMs     Int?     @map("latency_ms")
+  attemptedAt   DateTime @default(now()) @map("attempted_at") @db.Timestamptz(6)
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryId, attemptNumber])
+  @@index([deliveryId])
+  @@map("delivery_attempts")
+}

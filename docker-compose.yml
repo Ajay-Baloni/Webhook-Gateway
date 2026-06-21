@@ -4,17 +4,15 @@ services:
     container_name: wg-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: webhook
-      POSTGRES_PASSWORD: webhook
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: webhook_gateway
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Schema is applied automatically on first boot (empty volume only).
-      - ./backend/db:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U webhook -d webhook_gateway"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d webhook_gateway"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -27,13 +25,16 @@ services:
       dockerfile: Dockerfile
     container_name: wg-backend
     restart: unless-stopped
-    command: npm run start:dev
+    # Generate the Prisma client (against the mounted source), apply pending
+    # migrations, then start Nest in watch mode.
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run start:dev"
     environment:
       NODE_ENV: development
       PORT: "3000"
-      DATABASE_URL: postgres://webhook:webhook@postgres:5432/webhook_gateway
-      # Used by the demo control panel to reach the fake destination.
-      FAKE_DESTINATION_URL: http://fake-destination:4000
+      WORKER_POLL_INTERVAL: "5000"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/webhook_gateway
+      # Shared control file toggled by the demo panel; read by fake-destination.
+      DEMO_CONTROL_FILE: /shared/demo-control.json
       # Default destination URL handed out in demo seeding.
       DEFAULT_DESTINATION_URL: http://fake-destination:4000/webhook
     ports:
@@ -42,6 +43,8 @@ services:
       # Hot reload: mount source, keep container's node_modules.
       - ./backend:/app
       - /app/node_modules
+      # Shared demo-control file (backend writes, fake-destination reads).
+      - ./shared:/shared
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,7 +59,7 @@ services:
     restart: unless-stopped
     command: npm run dev -- --host 0.0.0.0
     environment:
-      # Vite proxies /api and /ingest to the backend (see vite.config.ts).
+      # Vite proxies /api-style calls to the backend (see vite.config.ts).
       VITE_API_URL: http://localhost:3000
     ports:
       - "5173:5173"
@@ -77,11 +80,13 @@ services:
     command: node index.js
     environment:
       PORT: "4000"
+      DEMO_CONTROL_FILE: /shared/demo-control.json
     ports:
       - "4000:4000"
     volumes:
       - ./fake-destination:/app
       - /app/node_modules
+      - ./shared:/shared
     networks:
       - wg
 

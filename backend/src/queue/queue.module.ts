@@ -1,20 +1,15 @@
 import { Module } from '@nestjs/common';
 import { AttemptsModule } from '../modules/attempts/attempts.module';
-import { ConnectionsModule } from '../modules/connections/connections.module';
+import { QueueWorkerService } from './queue-worker.service';
 
 /**
- * Postgres-backed queue worker. Polls every 5s:
- *   SELECT ... FROM deliveries
- *   WHERE status IN ('pending','retrying') AND next_retry_at <= now()
- *   FOR UPDATE SKIP LOCKED LIMIT 10
- *
- * Delivers via HTTP, records an attempt, applies exponential backoff with
- * jitter, and dead-letters after maxAttempts.
- *
- * TODO(step 5): add QueueWorker (@Interval) + DeliveryDispatcher.
+ * Postgres-backed queue worker. Polls every WORKER_POLL_INTERVAL ms, claims due
+ * deliveries with FOR UPDATE SKIP LOCKED, delivers over HTTP, records each
+ * attempt, applies exponential backoff with jitter, and dead-letters after
+ * maxAttempts.
  */
 @Module({
-  imports: [AttemptsModule, ConnectionsModule],
-  providers: [],
+  imports: [AttemptsModule],
+  providers: [QueueWorkerService],
 })
 export class QueueModule {}

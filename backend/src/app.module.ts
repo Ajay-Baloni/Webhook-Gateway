@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 
-import { DatabaseModule } from './database/database.module';
+import { PrismaModule } from './prisma/prisma.module';
 
 // Domain modules
 import { SourcesModule } from './modules/sources/sources.module';
@@ -10,6 +10,7 @@ import { ConnectionsModule } from './modules/connections/connections.module';
 import { EventsModule } from './modules/events/events.module';
 import { DeliveriesModule } from './modules/deliveries/deliveries.module';
 import { AttemptsModule } from './modules/attempts/attempts.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 
 // Subsystems (scaffolded now, implemented in later steps)
 import { IngestModule } from './ingest/ingest.module';
@@ -20,7 +21,7 @@ import { DemoModule } from './demo/demo.module';
   imports: [
     // @Interval/@Cron support for the queue worker (step 5).
     ScheduleModule.forRoot(),
-    DatabaseModule,
+    PrismaModule,
 
     SourcesModule,
     DestinationsModule,
@@ -28,6 +29,7 @@ import { DemoModule } from './demo/demo.module';
     EventsModule,
     DeliveriesModule,
     AttemptsModule,
+    AnalyticsModule,
 
     IngestModule,
     QueueModule,

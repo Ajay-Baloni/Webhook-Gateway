@@ -12,7 +12,7 @@ class CreateDestinationDto {
   url: string;
 }
 
-@Controller('api/destinations')
+@Controller('destinations')
 export class DestinationsController {
   constructor(private readonly destinations: DestinationsService) {}
 

@@ -1,9 +1,13 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { EventsService } from './events.service';
+import { DeliveriesService } from '../deliveries/deliveries.service';
 
-@Controller('api/events')
+@Controller('events')
 export class EventsController {
-  constructor(private readonly events: EventsService) {}
+  constructor(
+    private readonly events: EventsService,
+    private readonly deliveries: DeliveriesService,
+  ) {}
 
   @Get()
   findAll(
@@ -27,5 +31,10 @@ export class EventsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.events.findOne(id);
+  }
+
+  @Get(':id/deliveries')
+  findDeliveries(@Param('id') id: string) {
+    return this.deliveries.findByEvent(id);
   }
 }

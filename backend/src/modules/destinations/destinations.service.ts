@@ -1,34 +1,21 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { Pool } from 'pg';
-import { PG_POOL } from '../../database/database.module';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class DestinationsService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  async create(name: string, url: string) {
-    const { rows } = await this.pool.query(
-      `INSERT INTO destinations (name, url)
-       VALUES ($1, $2)
-       RETURNING id, name, url, created_at`,
-      [name, url],
-    );
-    return rows[0];
+  create(name: string, url: string) {
+    return this.prisma.destination.create({ data: { name, url } });
   }
 
-  async findAll() {
-    const { rows } = await this.pool.query(
-      `SELECT id, name, url, created_at FROM destinations ORDER BY created_at DESC`,
-    );
-    return rows;
+  findAll() {
+    return this.prisma.destination.findMany({ orderBy: { createdAt: 'desc' } });
   }
 
   async findOne(id: string) {
-    const { rows } = await this.pool.query(
-      `SELECT id, name, url, created_at FROM destinations WHERE id = $1`,
-      [id],
-    );
-    if (!rows[0]) throw new NotFoundException(`Destination ${id} not found`);
-    return rows[0];
+    const destination = await this.prisma.destination.findUnique({ where: { id } });
+    if (!destination) throw new NotFoundException(`Destination ${id} not found`);
+    return destination;
   }
 }

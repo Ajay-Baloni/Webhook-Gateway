@@ -1,6 +1,6 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { Pool, PoolClient } from 'pg';
-import { PG_POOL } from '../../database/database.module';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
 
 export interface CreateEventInput {
   sourceId: string;
@@ -11,34 +11,48 @@ export interface CreateEventInput {
 
 @Injectable()
 export class EventsService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Insert a raw event. If an idempotency_key collides for the same source,
-   * returns the already-stored event and `created: false` (used by ingest).
-   * Accepts an optional client so it can run inside the ingest transaction.
+   * returns the already-stored event with `created: false` (used by ingest).
+   * Accepts an optional transaction client so it can run inside the ingest tx.
    */
   async create(
     input: CreateEventInput,
-    client: Pool | PoolClient = this.pool,
-  ): Promise<{ event: any; created: boolean }> {
-    const { rows } = await client.query(
-      `INSERT INTO events (source_id, raw_body, headers, idempotency_key)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (source_id, idempotency_key) DO NOTHING
-       RETURNING id, source_id, received_at`,
-      [input.sourceId, input.rawBody, input.headers, input.idempotencyKey ?? null],
-    );
-
-    if (rows[0]) return { event: rows[0], created: true };
-
-    // Conflict: fetch the existing row.
-    const existing = await client.query(
-      `SELECT id, source_id, received_at FROM events
-       WHERE source_id = $1 AND idempotency_key = $2`,
-      [input.sourceId, input.idempotencyKey],
-    );
-    return { event: existing.rows[0], created: false };
+    tx: Prisma.TransactionClient = this.prisma,
+  ): Promise<{ event: { id: string; sourceId: string; receivedAt: Date }; created: boolean }> {
+    try {
+      const event = await tx.event.create({
+        data: {
+          sourceId: input.sourceId,
+          rawBody: input.rawBody,
+          headers: (input.headers ?? {}) as Prisma.InputJsonValue,
+          idempotencyKey: input.idempotencyKey ?? null,
+        },
+        select: { id: true, sourceId: true, receivedAt: true },
+      });
+      return { event, created: true };
+    } catch (err) {
+      // P2002 = unique constraint violation on (source_id, idempotency_key).
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002' &&
+        input.idempotencyKey
+      ) {
+        const existing = await tx.event.findUnique({
+          where: {
+            sourceId_idempotencyKey: {
+              sourceId: input.sourceId,
+              idempotencyKey: input.idempotencyKey,
+            },
+          },
+          select: { id: true, sourceId: true, receivedAt: true },
+        });
+        if (existing) return { event: existing, created: false };
+      }
+      throw err;
+    }
   }
 
   async findAll(filters: {
@@ -49,61 +63,102 @@ export class EventsService {
     limit?: number;
     offset?: number;
   }) {
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const conditions: Prisma.Sql[] = [];
 
-    if (filters.sourceId) {
-      params.push(filters.sourceId);
-      where.push(`e.source_id = $${params.length}`);
-    }
-    if (filters.from) {
-      params.push(filters.from);
-      where.push(`e.received_at >= $${params.length}`);
-    }
-    if (filters.to) {
-      params.push(filters.to);
-      where.push(`e.received_at <= $${params.length}`);
-    }
-    // Status filter operates over the event's deliveries (any matching).
+    if (filters.sourceId) conditions.push(Prisma.sql`e.source_id = ${filters.sourceId}::uuid`);
+    if (filters.from) conditions.push(Prisma.sql`e.received_at >= ${filters.from}::timestamptz`);
+    if (filters.to) conditions.push(Prisma.sql`e.received_at <= ${filters.to}::timestamptz`);
     if (filters.status) {
-      params.push(filters.status);
-      where.push(
-        `EXISTS (SELECT 1 FROM deliveries d WHERE d.event_id = e.id AND d.status = $${params.length})`,
+      conditions.push(
+        Prisma.sql`EXISTS (SELECT 1 FROM deliveries d WHERE d.event_id = e.id AND d.status = ${filters.status}::"DeliveryStatus")`,
       );
     }
 
+    const where =
+      conditions.length > 0
+        ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
+        : Prisma.empty;
+
     const limit = Math.min(filters.limit ?? 50, 200);
     const offset = filters.offset ?? 0;
-    params.push(limit, offset);
 
-    const { rows } = await this.pool.query(
-      `SELECT e.id, e.source_id, s.name AS source_name, e.received_at, e.idempotency_key,
-              COALESCE(SUM(d.attempt_count), 0)::int AS attempt_count,
-              COUNT(d.id)::int AS delivery_count,
-              COUNT(*) FILTER (WHERE d.status = 'succeeded')::int     AS succeeded_count,
-              COUNT(*) FILTER (WHERE d.status = 'dead_lettered')::int AS dead_lettered_count,
-              COUNT(*) FILTER (WHERE d.status IN ('pending','delivering','retrying','failed'))::int AS in_flight_count
-       FROM events e
-       JOIN sources s ON s.id = e.source_id
-       LEFT JOIN deliveries d ON d.event_id = e.id
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-       GROUP BY e.id, s.name
-       ORDER BY e.received_at DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params,
-    );
-    return rows;
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        sourceId: string;
+        sourceName: string;
+        receivedAt: Date;
+        idempotencyKey: string | null;
+        attemptCount: number;
+        deliveryCount: number;
+        succeededCount: number;
+        deadLetteredCount: number;
+        retryingCount: number;
+        inFlightCount: number;
+        failedCount: number;
+      }>
+    >`
+      SELECT e.id, e.source_id AS "sourceId", s.name AS "sourceName",
+             e.received_at AS "receivedAt", e.idempotency_key AS "idempotencyKey",
+             COALESCE(SUM(d.attempt_count), 0)::int AS "attemptCount",
+             COUNT(d.id)::int AS "deliveryCount",
+             COUNT(*) FILTER (WHERE d.status = 'succeeded')::int     AS "succeededCount",
+             COUNT(*) FILTER (WHERE d.status = 'dead_lettered')::int AS "deadLetteredCount",
+             COUNT(*) FILTER (WHERE d.status = 'retrying')::int      AS "retryingCount",
+             COUNT(*) FILTER (WHERE d.status IN ('pending','delivering'))::int AS "inFlightCount",
+             COUNT(*) FILTER (WHERE d.status = 'failed')::int        AS "failedCount"
+      FROM events e
+      JOIN sources s ON s.id = e.source_id
+      LEFT JOIN deliveries d ON d.event_id = e.id
+      ${where}
+      GROUP BY e.id, s.name
+      ORDER BY e.received_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    return rows.map((r) => ({
+      id: r.id,
+      source_id: r.sourceId,
+      source_name: r.sourceName,
+      received_at: r.receivedAt,
+      idempotency_key: r.idempotencyKey,
+      attempt_count: r.attemptCount,
+      delivery_count: r.deliveryCount,
+      status: this.rollupStatus(r),
+    }));
+  }
+
+  /** Collapse an event's deliveries into one representative status for the table. */
+  private rollupStatus(r: {
+    deliveryCount: number;
+    deadLetteredCount: number;
+    retryingCount: number;
+    inFlightCount: number;
+    failedCount: number;
+    succeededCount: number;
+  }): string {
+    if (r.deliveryCount === 0) return 'pending';
+    if (r.deadLetteredCount > 0) return 'dead_lettered';
+    if (r.retryingCount > 0) return 'retrying';
+    if (r.inFlightCount > 0) return 'pending';
+    if (r.failedCount > 0) return 'failed';
+    return 'succeeded';
   }
 
   async findOne(id: string) {
-    const { rows } = await this.pool.query(
-      `SELECT e.id, e.source_id, s.name AS source_name, e.raw_body, e.headers,
-              e.idempotency_key, e.received_at
-       FROM events e JOIN sources s ON s.id = e.source_id
-       WHERE e.id = $1`,
-      [id],
-    );
-    if (!rows[0]) throw new NotFoundException(`Event ${id} not found`);
-    return rows[0];
+    const event = await this.prisma.event.findUnique({
+      where: { id },
+      include: { source: { select: { name: true } } },
+    });
+    if (!event) throw new NotFoundException(`Event ${id} not found`);
+    return {
+      id: event.id,
+      source_id: event.sourceId,
+      source_name: event.source.name,
+      raw_body: event.rawBody,
+      headers: event.headers,
+      idempotency_key: event.idempotencyKey,
+      received_at: event.receivedAt,
+    };
   }
 }

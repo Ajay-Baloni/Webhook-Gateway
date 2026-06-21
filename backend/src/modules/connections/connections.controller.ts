@@ -14,7 +14,7 @@ class CreateConnectionDto {
   retry_policy?: object;
 }
 
-@Controller('api/connections')
+@Controller('connections')
 export class ConnectionsController {
   constructor(private readonly connections: ConnectionsService) {}
 

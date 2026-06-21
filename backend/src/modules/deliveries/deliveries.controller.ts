@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { DeliveriesService } from './deliveries.service';
 
-@Controller('api/deliveries')
+@Controller('deliveries')
 export class DeliveriesController {
   constructor(private readonly deliveries: DeliveriesService) {}
 
@@ -18,13 +18,8 @@ export class DeliveriesController {
     return this.deliveries.replayAllDeadLettered();
   }
 
-  @Get('by-event/:eventId')
-  findByEvent(@Param('eventId') eventId: string) {
-    return this.deliveries.findByEvent(eventId);
-  }
-
-  @Post(':id/replay')
-  replay(@Param('id') id: string) {
-    return this.deliveries.replay(id);
+  @Post(':deliveryId/replay')
+  replay(@Param('deliveryId') deliveryId: string) {
+    return this.deliveries.replay(deliveryId);
   }
 }
