@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: webhook
+      POSTGRES_PASSWORD: webhook
+      POSTGRES_DB: webhook_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Schema is applied automatically on first boot (empty volume only).
+      - ./backend/db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webhook -d webhook_gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - wg
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: wg-backend
+    restart: unless-stopped
+    command: npm run start:dev
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      DATABASE_URL: postgres://webhook:webhook@postgres:5432/webhook_gateway
+      # Used by the demo control panel to reach the fake destination.
+      FAKE_DESTINATION_URL: http://fake-destination:4000
+      # Default destination URL handed out in demo seeding.
+      DEFAULT_DESTINATION_URL: http://fake-destination:4000/webhook
+    ports:
+      - "3000:3000"
+    volumes:
+      # Hot reload: mount source, keep container's node_modules.
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wg
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: wg-frontend
+    restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      # Vite proxies /api and /ingest to the backend (see vite.config.ts).
+      VITE_API_URL: http://localhost:3000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - wg
+
+  fake-destination:
+    build:
+      context: ./fake-destination
+      dockerfile: Dockerfile
+    container_name: wg-fake-destination
+    restart: unless-stopped
+    command: node index.js
+    environment:
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./fake-destination:/app
+      - /app/node_modules
+    networks:
+      - wg
+
+volumes:
+  pgdata:
+
+networks:
+  wg:
+    driver: bridge
