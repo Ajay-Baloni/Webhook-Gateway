@@ -112,7 +112,7 @@ gives us a safe, concurrent work queue..
 | Frontend         | **Vite + React + TS**   | Fast dev, hot reload                                            |
 | Styling          | **TailwindCSS**         | Dark, data-dense dev-tool look                                  |
 | Charts           | **Recharts**            | Hourly success/error + throughput                               |
-| Data fetching    | **React Query**         | Polls every 3s for live updates                                 |
+| Data fetching    | **Native Fetch API**    | Custom `usePolling` hook re-fetches every 3s for live updates   |
 | Fake destination | **Express**             | A target we can "break" on demand                               |
 
 ---
