@@ -1,9 +1,5 @@
-// Webhook Gateway — Prisma schema (source of truth for the client).
-// The actual DDL (incl. partial indexes) lives in prisma/migrations and is
-// applied via `prisma migrate deploy`.
-
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // Runs on Debian (node:20) in the container and detects the right engine.
   binaryTargets = ["native"]
 }
